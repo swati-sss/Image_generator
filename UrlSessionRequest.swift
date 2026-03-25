@@ -1,217 +1,141 @@
 //
-//  URLSessionRequest.swift
-//  compass_sdk_ioss
+//  MapRootHost.swift
+//  compass-sample-app
 //
-//  Created by Rakesh Shetty on 9/23/22.
+//  Created by p0a0595 on 9/11/25.
+//
 //
 
-import Combine
-import Foundation
+//import SwiftUI
+//import LivingDesign
+//
+//struct MapRootHost: UIViewControllerRepresentable {
+//    let viewController: LDRootViewController
+//    
+//    func makeUIViewController(context: Context) -> LDRootViewController {
+//        return viewController
+//    }
+//    
+//    func updateUIViewController(_ uiViewController: LDRootViewController, context: Context) {
+//        
+//    }
+//}
 
-final class URLSessionRequest<T: Decodable>: URLSessionRequestType {
-    var urlString: String
-    var method: HTTPMethod
-    var parameters: HashMap?
-    var urlComponentParameters: HashMap?
-    var headers: [String: String]
-    var urlComponents: URLComponents?
-    var urlSession: URLSessionType
+import SwiftUI
+import LivingDesign
 
-    required init(urlString: String,
-                  method: HTTPMethod,
-                  parameters: HashMap? = nil,
-                  urlComponentParameters: [Int: [String]] = [:],
-                  headers: [String: String] = [:],
-                  urlSession: URLSessionType) {
-        self.urlString = urlString
-        self.method = method
-        self.parameters = parameters
-        self.headers = headers
-        self.urlSession = urlSession
-        addQueryItems(with: urlComponentParameters)
+final class MapContainerViewController: UIViewController {
+    let mapRoot: LDRootViewController
+
+    init(mapRoot: LDRootViewController) {
+        self.mapRoot = mapRoot
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        rehostIfNeeded()
     }
 
-    func execute() -> AnyPublisher<T?, Error> {
-        var dataTask: URLSessionDataTask?
-        do {
-            let  urlRequest = try self.createURLRequest(method: method, headers: headers)
-            let requestID = String(UUID().uuidString.prefix(8))
-            let bodyData = urlRequest.httpBody
-            let bodyHash = bodyData?.fnv1a64Hex ?? "no-body"
-            let bodySize = bodyData?.count ?? 0
-            let isAnalyticsRequest = (urlRequest.url?.absoluteString.contains("/analytics/allspark") ?? false)
-            let analyticsBatchTimestamp = extractAnalyticsBatchTimestamp(from: bodyData)
-            let analyticsEventCount = extractAnalyticsEventCount(from: bodyData)
-            var attempt = 0
-            return Deferred {
-                Future<T?, Error> { [weak self] promise in
-                    attempt += 1
-                    let currentAttempt = attempt
-                    if isAnalyticsRequest {
-                        Log.info("""
-                                 - Analytics Request Attempt -
-                                 RequestId: \(requestID)
-                                 Attempt: \(currentAttempt)
-                                 URL: \(String(describing: urlRequest.url))
-                                 BodyBytes: \(bodySize)
-                                 BodyHash: \(bodyHash)
-                                 BatchTimestamp: \(analyticsBatchTimestamp)
-                                 EventCount: \(analyticsEventCount)
-                                 """)
-                    }
-                    let dataTask = self?.urlSession
-                        .createDataTask(with: urlRequest) { data, response, error in
-                            let nsError = error as NSError?
-                            Log.info("""
-                                     - Response Info -
-                                     RequestId: \(requestID)
-                                     Attempt: \(currentAttempt)
-                                     URL: \(String(describing: urlRequest.url))
-                                     Response: \(String(describing: response)),
-                                     Error: \(String(describing: error)),
-                                     ErrorDomain: \(nsError?.domain ?? "nil"),
-                                     ErrorCode: \(nsError?.code ?? 0),
-                                     BodyHash: \(bodyHash),
-                                     BatchTimestamp: \(analyticsBatchTimestamp),
-                                     EventCount: \(analyticsEventCount),
-                                     Data: \(String(describing: (data?.prettyPrintedJSONString)))
-                                     """)
-                            if let error = error {
-                                promise(.failure(ErrorResponse(errorCode: -1, error: error)))
-                                return
-                            }
+    func rehostIfNeeded() {
+        let child = mapRoot
 
-                            guard let httpResponse  = response as? HTTPURLResponse else {
-                                promise(.failure(ErrorResponse(errorCode: -2,
-                                                               error: WebAPIRequestError.nilHTTPResponse)))
-                                return
-                            }
+        if let parent = child.parent, parent !== self {
+            child.willMove(toParent: nil)
+            child.view.removeFromSuperview()
+            child.removeFromParent()
+        }
 
-                            guard httpResponse.isStatusCodeSuccessFull else {
-                                var data = data
-                                let config = StaticStorage.storeConfig
-                                let shouldLogSensitiveInfo = config?.debugLog?.sensitiveInfoEnabled ?? false
-                                if shouldLogSensitiveInfo {
-                                    data = nil
-                                }
-                                promise(.failure(ErrorResponse(response: httpResponse,
-                                                               error: WebAPIRequestError.unsuccessfulHTTPStatusCode,
-                                                               data: data)))
-                                return
-                            }
+        if child.parent !== self {
+            addChild(child)
+            child.didMove(toParent: self)
+        }
 
-                            switch T.self {
-                            case is String.Type:
-                                let body = data.map { String(data: $0, encoding: .utf8) }
-                                promise(.success(body as? T))
-                            case is Void.Type:
-                                promise(.success(nil))
-                            default:
-                                guard let data = data, !data.isEmpty else {
-                                    promise(.failure(ErrorResponse(response: httpResponse,
-                                                                   error: WebAPIRequestError.emptyDataResponse)))
-                                    return
-                                }
+        if child.view.superview !== view {
+            let v = child.view!
+            v.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(v)
+            NSLayoutConstraint.activate([
+                v.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+                v.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+                v.topAnchor.constraint(equalTo: view.topAnchor),
+                v.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+            ])
+        }
 
-                                let decodeResult = CodableHelper.decode(T.self, from: data)
-                                switch decodeResult {
-                                case let .success(decodableObj):
-                                    promise(.success(decodableObj))
-                                case let .failure(error):
-                                    promise(.failure(ErrorResponse(response: httpResponse, error: error, data: data)))
-                                }
-                            }
-                        }
-                    dataTask?.resume()
-                }
-                .handleEvents(receiveCancel: {
-                    dataTask?.cancel()
-                    dataTask = nil
-                })
-            }
-            .eraseToAnyPublisher()
-        } catch {
-            return Fail(error: error).eraseToAnyPublisher()
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+    }
+}
+
+struct MapRootHost: UIViewControllerRepresentable {
+    let viewController: LDRootViewController
+    @Binding var mapViewController: UIViewController?
+
+    func makeUIViewController(context: Context) -> MapContainerViewController {
+        addMapViewController(mapViewController)
+        let containerViewControler = MapContainerViewController(mapRoot: viewController)
+        return containerViewControler
+    }
+
+    func updateUIViewController(_ uiViewController: MapContainerViewController, context: Context) {
+        addMapViewController(mapViewController)
+        uiViewController.rehostIfNeeded()
+    }
+
+    func addMapViewController(_ mapViewController: UIViewController?) {
+        guard let mapViewController else {
+            viewController.children.forEach { viewController.remove(childVC: $0) }
+            return
+        }
+
+        viewController.children
+            .filter { $0 !== mapViewController }
+            .forEach { viewController.remove(childVC: $0) }
+
+        if let parent = mapViewController.parent, parent !== viewController {
+            parent.remove(childVC: mapViewController)
+        }
+
+        if mapViewController.parent !== viewController {
+            viewController.add(childVC: mapViewController)
         }
     }
 }
 
-private extension URLSessionRequest {
-    func createURLRequest(method: HTTPMethod, headers: [String: String]) throws -> URLRequest {
-        guard let url = URL(string: urlString) else {
-            throw WebAPIRequestError.requestMissingURL
+struct KeyboardIgnoringMapHost: View {
+    let viewController: LDRootViewController
+    @Binding var mapViewController: UIViewController?
+
+    var body: some View {
+        GeometryReader { proxy in
+            MapRootHost(viewController: viewController, mapViewController: $mapViewController)
+                .background(Color(.systemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(width: proxy.size.width, height: proxy.size.height)
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+    }
+}
 
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = method.rawValue
-
-        headers.forEach { key, value in
-            urlRequest.setValue(value, forHTTPHeaderField: key)
-        }
-
-        let encoding = JSONDataEncoding()
-
-        if let urlComponents = urlComponents {
-            urlRequest = encoding.encode(urlRequest, with: urlComponents)
-        } else {
-            urlRequest = encoding.encode(urlRequest, with: parameters)
-        }
-
-        let headersSummary = formatHeadersForLogging(headers)
-        Log.info("""
-                 - Request Info -
-                 URL: \(String(describing: urlRequest.url))
-                 Method: \(urlRequest.httpMethod ?? "GET")
-                 Body: \(String(data: urlRequest.httpBody ?? Data(), encoding: .utf8) ?? "nil")
-                 Headers Used:
-                 \(headersSummary)
-                 """)
-
-        return urlRequest
+private extension UIViewController {
+    func add(childVC: UIViewController) {
+        addChild(childVC)
+        view.addSubview(childVC.view)
+        childVC.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addConstraints([
+            childVC.view.topAnchor.constraint(equalTo: view.topAnchor),
+            childVC.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            childVC.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            childVC.view.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+        childVC.didMove(toParent: self)
     }
 
-    func formatHeadersForLogging(_ headers: [String: String]) -> String {
-        let displayKeys = [
-            RequestIdentifier.consumerId.rawValue,
-            RequestIdentifier.wmConsumerId.rawValue,
-            RequestIdentifier.clientId.rawValue,
-            "Content-Type"
-        ]
-
-        return headers
-            .sorted { $0.key.lowercased() < $1.key.lowercased() }
-            .map { key, value in
-                let shouldDisplay = displayKeys.contains { $0.lowercased() == key.lowercased() }
-                return "\(key): \(shouldDisplay ? value : "***")"
-            }
-            .joined(separator: "\n")
-    }
-
-    func addQueryItems(with parameters: [Int: [String]]?) {
-        guard let parameters = parameters, !parameters.isEmpty else {
-            urlComponents = nil
-            return
-        }
-        urlComponents = URLComponents()
-        urlComponents?.queryItems = parameters.sorted { $0.key < $1.key }
-            .map { URLQueryItem(name: $0.value[0], value: $0.value[1]) }
-    }
-
-    func extractAnalyticsBatchTimestamp(from body: Data?) -> String {
-        guard let body,
-              let jsonObject = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let batchTimestamp = jsonObject["batchTimestamp"] else {
-            return "n/a"
-        }
-        return String(describing: batchTimestamp)
-    }
-
-    func extractAnalyticsEventCount(from body: Data?) -> String {
-        guard let body,
-              let jsonObject = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let events = jsonObject["events"] as? [Any] else {
-            return "n/a"
-        }
-        return String(events.count)
+    func remove(childVC: UIViewController) {
+        childVC.willMove(toParent: nil)
+        childVC.view.removeFromSuperview()
+        childVC.removeFromParent()
     }
 }
